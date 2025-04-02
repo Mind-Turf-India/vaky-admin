@@ -29,15 +29,17 @@ const ManageAdmins = () => {
       const userCredential = await createUserWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
 
+      const formattedEmail = user.email.replace(/\./g, "_");
+
       // Store admin details in Firestore with role
-      await setDoc(doc(db, "users", user.uid), { email, role }, { merge: true });
+      await setDoc(doc(db, "users", formattedEmail), { email, role }, { merge: true });
 
       alert("Admin created successfully!");
       setEmail("");
       setPassword("");
 
       // Refresh user list after adding a new admin
-      setUsers([...users, { id: user.uid, email, role }]);
+      setUsers([...users, { id: formattedEmail, email, role }]);
     } catch (error) {
       console.error("Error creating admin:", error.message);
     }
