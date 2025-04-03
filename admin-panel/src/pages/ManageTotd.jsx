@@ -24,10 +24,70 @@ const ManageTotd = () => {
   });
 
   const [isLoading, setIsLoading] = useState(false);
+  const [editableRows, setEditableRows] = useState({});
+  const [editState, setEditState] = useState({});
+  const [selectedPosts, setSelectedPosts] = useState({
+    morning: [],
+    afternoon: [],
+    evening: [],
+  });
+  const [selectAll, setSelectAll] = useState({
+    morning: false,
+    afternoon: false,
+    evening: false,
+  });
 
   useEffect(() => {
     fetchTOTD();
   }, []);
+
+  // Toggle edit mode for a specific row
+  const toggleEditMode = (timeOfDay, postKey) => {
+    const key = `${timeOfDay}-${postKey}`;
+    
+    // If we're entering edit mode, initialize edit state with current values
+    if (!editableRows[key]) {
+      setEditState(prev => ({
+        ...prev,
+        [key]: {
+          title: totd[timeOfDay][postKey].title || '',
+          isPaid: totd[timeOfDay][postKey].isPaid || false
+        }
+      }));
+    }
+    
+    setEditableRows(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  // Check if a row is in edit mode
+  const isEditing = (timeOfDay, postKey) => {
+    const key = `${timeOfDay}-${postKey}`;
+    return editableRows[key] || false;
+  };
+
+  // Get the current edit value for a field
+  const getEditValue = (timeOfDay, postKey, field) => {
+    const key = `${timeOfDay}-${postKey}`;
+    if (editableRows[key] && editState[key]) {
+      return editState[key][field];
+    }
+    return totd[timeOfDay][postKey][field];
+  };
+
+  // Update the edit state without affecting Firestore
+  const updateEditState = (timeOfDay, postKey, field, value) => {
+    const key = `${timeOfDay}-${postKey}`;
+    setEditState(prev => ({
+      ...prev,
+      [key]: {
+        ...prev[key],
+        [field]: value
+      }
+    }));
+  };
 
   // 🔹 Fetch TOTD data from Firestore - using document structure
   const fetchTOTD = async () => {
@@ -142,11 +202,48 @@ const ManageTotd = () => {
           });
           
           await fetchTOTD();
+          
+          // If this was a "isPaid" toggle update, notify success
+          if (field === "isPaid") {
+            console.log(`Post ${postKey} updated to ${value ? "paid" : "free"} content`);
+          }
         }
       }
     } catch (error) {
       console.error("Error updating post:", error);
       alert("Failed to update post");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 🔹 Save post changes
+  const handleSavePost = async (timeOfDay, postKey) => {
+    setIsLoading(true);
+    const key = `${timeOfDay}-${postKey}`;
+    
+    try {
+      const docRef = doc(db, "totd", timeOfDay);
+      const docSnap = await getDoc(docRef);
+      
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        
+        if (data[postKey] && editState[key]) {
+          // Update with the edited state values
+          await updateDoc(docRef, {
+            [`${postKey}.title`]: editState[key].title,
+            [`${postKey}.isPaid`]: editState[key].isPaid
+          });
+          
+          await fetchTOTD();
+          toggleEditMode(timeOfDay, postKey); // Exit edit mode
+          console.log("Post updated successfully!");
+        }
+      }
+    } catch (error) {
+      console.error("Error saving post:", error);
+      alert("Failed to save post");
     } finally {
       setIsLoading(false);
     }
@@ -166,18 +263,113 @@ const ManageTotd = () => {
         const data = docSnap.data();
         
         if (data[postKey]) {
-          // Create a copy of the data without the post to be deleted
-          const {  ...restData } = data;
+          // Create a copy of the data
+          const updatedData = { ...data };
+          // Delete the specific post
+          delete updatedData[postKey];
           
           // Set the updated document
-          await setDoc(docRef, restData);
+          await setDoc(docRef, updatedData);
           
           await fetchTOTD();
+          alert("Post deleted successfully");
         }
       }
     } catch (error) {
       console.error("Error deleting post:", error);
       alert("Failed to delete post");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 🔹 Handle selection of posts
+  const handleSelectPost = (timeOfDay, postKey) => {
+    setSelectedPosts(prev => {
+      const newSelectedPosts = { ...prev };
+      
+      if (newSelectedPosts[timeOfDay].includes(postKey)) {
+        // Remove if already selected
+        newSelectedPosts[timeOfDay] = newSelectedPosts[timeOfDay].filter(key => key !== postKey);
+      } else {
+        // Add if not selected
+        newSelectedPosts[timeOfDay] = [...newSelectedPosts[timeOfDay], postKey];
+      }
+      
+      return newSelectedPosts;
+    });
+  };
+
+  // 🔹 Handle select all for a category
+  const handleSelectAll = (timeOfDay) => {
+    const newSelectAll = { ...selectAll };
+    newSelectAll[timeOfDay] = !selectAll[timeOfDay];
+    setSelectAll(newSelectAll);
+    
+    const postKeys = Object.keys(totd[timeOfDay]).filter(key => key.startsWith('post'));
+    
+    setSelectedPosts(prev => {
+      const newSelectedPosts = { ...prev };
+      
+      if (newSelectAll[timeOfDay]) {
+        // Select all
+        newSelectedPosts[timeOfDay] = [...postKeys];
+      } else {
+        // Deselect all
+        newSelectedPosts[timeOfDay] = [];
+      }
+      
+      return newSelectedPosts;
+    });
+  };
+
+  // 🔹 Delete selected posts
+  const handleDeleteSelected = async (timeOfDay) => {
+    const selectedKeys = selectedPosts[timeOfDay];
+    
+    if (selectedKeys.length === 0) {
+      return alert("No posts selected for deletion");
+    }
+    
+    if (!confirm(`Are you sure you want to delete ${selectedKeys.length} selected posts?`)) {
+      return;
+    }
+    
+    setIsLoading(true);
+    
+    try {
+      const docRef = doc(db, "totd", timeOfDay);
+      const docSnap = await getDoc(docRef);
+      
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const updatedData = { ...data };
+        
+        // Remove each selected post
+        selectedKeys.forEach(key => {
+          delete updatedData[key];
+        });
+        
+        // Update the document
+        await setDoc(docRef, updatedData);
+        
+        // Reset selections
+        setSelectedPosts(prev => ({
+          ...prev,
+          [timeOfDay]: []
+        }));
+        
+        setSelectAll(prev => ({
+          ...prev,
+          [timeOfDay]: false
+        }));
+        
+        await fetchTOTD();
+        alert(`${selectedKeys.length} posts deleted successfully`);
+      }
+    } catch (error) {
+      console.error("Error deleting selected posts:", error);
+      alert("Failed to delete selected posts");
     } finally {
       setIsLoading(false);
     }
@@ -268,16 +460,53 @@ const ManageTotd = () => {
         <div key={timeOfDay}>
           <h3 style={{ marginTop: "20px", marginBottom: "10px" }}>{timeOfDay.toUpperCase()} THOUGHTS</h3>
           
+          {/* Bulk Actions */}
+          <div style={{ marginBottom: "10px", display: "flex", justifyContent: "space-between" }}>
+            <div>
+              <button
+                onClick={() => handleSelectAll(timeOfDay)}
+                style={{ 
+                  marginRight: "10px", 
+                  padding: "5px 10px",
+                  backgroundColor: selectAll[timeOfDay] ? "#5b9bd5" : "#f0f0f0",
+                  border: "1px solid #ddd",
+                  borderRadius: "3px",
+                  cursor: "pointer"
+                }}
+              >
+                {selectAll[timeOfDay] ? "Deselect All" : "Select All"}
+              </button>
+              <button
+                onClick={() => handleDeleteSelected(timeOfDay)}
+                disabled={selectedPosts[timeOfDay].length === 0 || isLoading}
+                style={{ 
+                  padding: "5px 10px",
+                  backgroundColor: selectedPosts[timeOfDay].length === 0 ? "#f0f0f0" : "#ff6666",
+                  color: selectedPosts[timeOfDay].length === 0 ? "#888" : "white",
+                  border: "1px solid #ddd",
+                  borderRadius: "3px",
+                  cursor: selectedPosts[timeOfDay].length === 0 || isLoading ? "not-allowed" : "pointer"
+                }}
+              >
+                Delete Selected ({selectedPosts[timeOfDay].length})
+              </button>
+            </div>
+            <div>
+              {isLoading && <span style={{ color: "#888" }}>Processing...</span>}
+            </div>
+          </div>
+          
           {Object.keys(totd[timeOfDay]).filter(key => key.startsWith('post')).length === 0 ? (
             <p style={{ color: "#666" }}>No posts available for this category</p>
           ) : (
             <table border="1" style={{ borderCollapse: "collapse", width: "100%" }}>
               <thead>
                 <tr>
+                  <th style={{ width: "40px" }}>Select</th>
                   <th>Post ID</th>
                   <th>Image</th>
                   <th>Title</th>
-                  <th>Type</th>
+                  <th style={{ width: "100px" }}>Type</th>
                   <th>Rating</th>
                   <th>Date Added</th>
                   <th>Actions</th>
@@ -296,8 +525,19 @@ const ManageTotd = () => {
                     const post = totd[timeOfDay][postKey] || {};
                     // Skip rendering if not a valid post object
                     if (!post || typeof post !== 'object') return null;
+                    
+                    const isEditingMode = isEditing(timeOfDay, postKey);
+                    const isSelected = selectedPosts[timeOfDay].includes(postKey);
+                    
                     return (
-                      <tr key={postKey}>
+                      <tr key={postKey} style={{ backgroundColor: isSelected ? "#f0f8ff" : "white" }}>
+                        <td style={{ textAlign: "center" }}>
+                          <input 
+                            type="checkbox" 
+                            checked={isSelected}
+                            onChange={() => handleSelectPost(timeOfDay, postKey)}
+                          />
+                        </td>
                         <td>{postKey}</td>
                         <td>
                           <img 
@@ -311,18 +551,35 @@ const ManageTotd = () => {
                         <td>
                           <input 
                             type="text" 
-                            value={post.title || ''} 
-                            onChange={(e) => handleUpdatePost(timeOfDay, postKey, "title", e.target.value)}
-                            disabled={isLoading}
-                            style={{ padding: "5px", width: "100%" }}
+                            value={isEditingMode ? getEditValue(timeOfDay, postKey, "title") : (post.title || '')}
+                            onChange={(e) => updateEditState(timeOfDay, postKey, "title", e.target.value)}
+                            disabled={!isEditingMode || isLoading}
+                            style={{ 
+                              padding: "5px", 
+                              width: "100%",
+                              border: isEditingMode ? "1px solid #5b9bd5" : "1px solid #ddd",
+                              backgroundColor: isEditingMode ? "white" : "#f9f9f9"
+                            }}
                           />
                         </td>
                         <td>
                           <select 
-                            value={post.isPaid ? "true" : "false"} 
-                            onChange={(e) => handleUpdatePost(timeOfDay, postKey, "isPaid", e.target.value === "true")}
+                            value={isEditingMode ? (getEditValue(timeOfDay, postKey, "isPaid") ? "true" : "false") : (post.isPaid ? "true" : "false")}
+                            onChange={(e) => {
+                              const value = e.target.value === "true";
+                              if (isEditingMode) {
+                                updateEditState(timeOfDay, postKey, "isPaid", value);
+                              } else {
+                                handleUpdatePost(timeOfDay, postKey, "isPaid", value);
+                              }
+                            }}
                             disabled={isLoading}
-                            style={{ padding: "5px" }}
+                            style={{ 
+                              padding: "5px", 
+                              width: "100%",
+                              border: isEditingMode ? "1px solid #5b9bd5" : "1px solid #ddd",
+                              backgroundColor: isEditingMode ? "white" : "#f9f9f9"
+                            }}
                           >
                             <option value="false">Free</option>
                             <option value="true">Paid</option>
@@ -331,13 +588,50 @@ const ManageTotd = () => {
                         <td>{(post.avgRating || 0).toFixed(1)} ({post.ratingCount || 0})</td>
                         <td>{post.createdAt ? post.createdAt.toDate().toLocaleDateString() : "N/A"}</td>
                         <td>
-                          <button 
-                            onClick={() => handleDeletePost(timeOfDay, postKey)}
-                            disabled={isLoading}
-                            style={{ backgroundColor: "#ff6666", color: "white" }}
-                          >
-                            Delete
-                          </button>
+                          <div style={{ display: "flex", gap: "5px" }}>
+                            {isEditingMode ? (
+                              <button 
+                                onClick={() => handleSavePost(timeOfDay, postKey)}
+                                disabled={isLoading}
+                                style={{ 
+                                  padding: "5px", 
+                                  backgroundColor: "#4CAF50", 
+                                  color: "white",
+                                  border: "none",
+                                  borderRadius: "3px"
+                                }}
+                              >
+                                Save
+                              </button>
+                            ) : (
+                              <button 
+                                onClick={() => toggleEditMode(timeOfDay, postKey)}
+                                disabled={isLoading}
+                                style={{ 
+                                  padding: "5px", 
+                                  backgroundColor: "#5b9bd5", 
+                                  color: "white",
+                                  border: "none",
+                                  borderRadius: "3px"
+                                }}
+                              >
+                                Edit
+                              </button>
+                            )}
+                            <button 
+                              onClick={() => handleDeletePost(timeOfDay, postKey)}
+                              disabled={isLoading}
+                              style={{ 
+                                padding: "5px", 
+                                backgroundColor: "#ff6666", 
+                                color: "white",
+                                border: "none",
+                                borderRadius: "3px"
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
