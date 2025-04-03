@@ -16,10 +16,21 @@ const ManageTrending = () => {
   const [bulkQuotes, setBulkQuotes] = useState([]); // Bulk quotes array
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [selectedQuotes, setSelectedQuotes] = useState([]);
+  const [selectAll, setSelectAll] = useState(false);
 
   useEffect(() => {
     fetchTrendingQuotes();
   }, []);
+
+  // Handle select all functionality
+  useEffect(() => {
+    if (selectAll) {
+      setSelectedQuotes(quotes.map(quote => quote.id));
+    } else {
+      setSelectedQuotes([]);
+    }
+  }, [selectAll, quotes]);
 
   // Fetch existing trending quotes
   const fetchTrendingQuotes = async () => {
@@ -42,7 +53,7 @@ const ManageTrending = () => {
 
   // Handle image upload
   const uploadImage = async (file) => {
-    const storageRef = ref(storage, `trendingQuotes/${file.name}`);
+    const storageRef = ref(storage, `templates/${file.name}`);
     await uploadBytes(storageRef, file);
     return getDownloadURL(storageRef);
   };
@@ -78,26 +89,7 @@ const ManageTrending = () => {
     }
   };
 
-  // Handle Editing isPaid Status & Title
-//   const handleEditQuote = async (id, field, value) => {
-//     try {
-//       setLoading(true);
-//       setError("");
-//       const quoteRef = doc(db, "templates", id);
-//       await updateDoc(quoteRef, { [field]: value });
-//       setQuotes(
-//         quotes.map((q) => (q.id === id ? { ...q, [field]: value } : q))
-//       );
-//       alert("Quote updated successfully!");
-//     } catch (error) {
-//       console.error("Error updating quote:", error);
-//       setError("Update failed: " + error.message);
-//     } finally {
-//       setLoading(false);
-//     }
-//   };
-
-  // Handle Save All Changes at once
+  // Handle Save Quote
   const handleSaveQuote = async (id, updatedData) => {
     try {
       setLoading(true);
@@ -148,6 +140,8 @@ const ManageTrending = () => {
       
       // Update UI by removing the deleted quote
       setQuotes(quotes.filter(q => q.id !== id));
+      // Also remove from selected quotes if it was selected
+      setSelectedQuotes(selectedQuotes.filter(quoteId => quoteId !== id));
       alert("Quote deleted successfully!");
       
     } catch (error) {
@@ -158,9 +152,127 @@ const ManageTrending = () => {
     }
   };
 
+  // Handle Delete Selected Quotes
+  const handleDeleteSelected = async () => {
+    if (selectedQuotes.length === 0) {
+      alert("No quotes selected for deletion.");
+      return;
+    }
+
+    if (!window.confirm(`Are you sure you want to delete ${selectedQuotes.length} selected quote(s)?`)) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      
+      let successCount = 0;
+      let errorCount = 0;
+      
+      // Process one by one to handle possible failures
+      for (const id of selectedQuotes) {
+        try {
+          const quote = quotes.find(q => q.id === id);
+          if (!quote) continue;
+          
+          // Delete from Firestore
+          await deleteDoc(doc(db, "templates", id));
+          
+          // Delete image if exists
+          if (quote.imageUrl) {
+            try {
+              const imagePath = quote.imageUrl.split('.com/o/')[1]?.split('?')[0];
+              if (imagePath) {
+                const decodedPath = decodeURIComponent(imagePath);
+                const imageRef = ref(storage, decodedPath);
+                await deleteObject(imageRef);
+              }
+            } catch (imgErr) {
+              console.error(`Error deleting image for quote ${id}:`, imgErr);
+            }
+          }
+          
+          successCount++;
+        } catch (err) {
+          console.error(`Error deleting quote ${id}:`, err);
+          errorCount++;
+        }
+      }
+      
+      // Update UI
+      setQuotes(quotes.filter(q => !selectedQuotes.includes(q.id)));
+      setSelectedQuotes([]);
+      setSelectAll(false);
+      
+      if (errorCount > 0) {
+        alert(`Operation completed with ${successCount} successful deletions and ${errorCount} failures.`);
+      } else {
+        alert(`Successfully deleted ${successCount} quote(s).`);
+      }
+      
+    } catch (error) {
+      console.error("Error in bulk delete operation:", error);
+      setError("Bulk delete failed: " + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Create image preview URL
   const createPreviewURL = (file) => {
     return URL.createObjectURL(file);
+  };
+
+  // Handle checkbox selection
+  const handleSelectQuote = (id) => {
+    setSelectedQuotes(prev => {
+      if (prev.includes(id)) {
+        return prev.filter(quoteId => quoteId !== id);
+      } else {
+        return [...prev, id];
+      }
+    });
+  };
+
+  // Save all edited quotes in one go
+  const handleSaveAllChanges = async () => {
+    if (!window.confirm("Save all changes to quotes?")) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError("");
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const quote of quotes) {
+        try {
+          const quoteRef = doc(db, "templates", quote.id);
+          await updateDoc(quoteRef, {
+            title: quote.title,
+            category: quote.category,
+            isPaid: quote.isPaid === "true" || quote.isPaid === true
+          });
+          successCount++;
+        } catch (err) {
+          console.error(`Error updating quote ${quote.id}:`, err);
+          errorCount++;
+        }
+      }
+
+      if (errorCount > 0) {
+        alert(`Operation completed with ${successCount} successful updates and ${errorCount} failures.`);
+      } else {
+        alert(`Successfully updated all quotes!`);
+      }
+    } catch (error) {
+      console.error("Error in save all operation:", error);
+      setError("Save all failed: " + error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -282,10 +394,59 @@ const ManageTrending = () => {
 
       {/* Display Quotes */}
       <h3>Existing Trending Quotes</h3>
+      
+      {/* Batch Actions */}
+      <div style={{ marginBottom: "10px", display: "flex", gap: "10px", alignItems: "center" }}>
+        <button 
+          onClick={() => setSelectAll(!selectAll)}
+          disabled={loading || quotes.length === 0}
+          style={{ padding: "5px 10px" }}
+        >
+          {selectAll ? "Deselect All" : "Select All"}
+        </button>
+        
+        <button 
+          onClick={handleDeleteSelected}
+          disabled={loading || selectedQuotes.length === 0}
+          style={{ 
+            padding: "5px 10px", 
+            backgroundColor: "#ff6666", 
+            color: "white",
+            cursor: selectedQuotes.length === 0 ? "not-allowed" : "pointer"
+          }}
+        >
+          Delete Selected ({selectedQuotes.length})
+        </button>
+        
+        <button 
+          onClick={handleSaveAllChanges}
+          disabled={loading || quotes.length === 0}
+          style={{ 
+            padding: "5px 10px", 
+            backgroundColor: "#4CAF50", 
+            color: "white"
+          }}
+        >
+          Save All Changes
+        </button>
+        
+        <span style={{ marginLeft: "auto" }}>
+          {selectedQuotes.length > 0 && `${selectedQuotes.length} of ${quotes.length} selected`}
+        </span>
+      </div>
+      
       {loading && !bulkQuotes.length ? <p>Loading quotes...</p> : (
-        <table border="1" style={{ borderCollapse: "collapse", width: "100%", marginTop: "20px" }}>
+        <table border="1" style={{ borderCollapse: "collapse", width: "100%", marginTop: "10px" }}>
           <thead>
             <tr>
+              <th style={{ width: "40px" }}>
+                <input 
+                  type="checkbox" 
+                  checked={selectAll}
+                  onChange={() => setSelectAll(!selectAll)}
+                  disabled={loading || quotes.length === 0}
+                />
+              </th>
               <th>Title</th>
               <th>Category</th>
               <th>Image</th>
@@ -296,7 +457,15 @@ const ManageTrending = () => {
           </thead>
           <tbody>
             {quotes.map((quote) => (
-              <tr key={quote.id}>
+              <tr key={quote.id} style={{ backgroundColor: selectedQuotes.includes(quote.id) ? "#f2f2f2" : "transparent" }}>
+                <td style={{ textAlign: "center" }}>
+                  <input 
+                    type="checkbox" 
+                    checked={selectedQuotes.includes(quote.id)}
+                    onChange={() => handleSelectQuote(quote.id)}
+                    disabled={loading}
+                  />
+                </td>
                 <td>
                   <input
                     type="text"
@@ -327,45 +496,58 @@ const ManageTrending = () => {
                     style={{ width: "100%" }}
                   />
                 </td>
-                <td>
+                <td style={{ textAlign: "center" }}>
                   {quote.imageUrl ? (
-                    <img src={quote.imageUrl} alt="quote" width="50" height="50" style={{ objectFit: "cover" }} />
+                    <div style={{ display: "flex", justifyContent: "center", alignItems: "center" }}>
+                      <img 
+                        src={quote.imageUrl} 
+                        alt="quote" 
+                        width="50" 
+                        height="50" 
+                        style={{ 
+                          objectFit: "cover", 
+                          cursor: "pointer",
+                          border: "1px solid #ddd"
+                        }}
+                        onClick={() => window.open(quote.imageUrl, '_blank')}
+                        title="Click to view full image"
+                      />
+                    </div>
                   ) : (
                     "No image"
                   )}
                 </td>
-                <td>
-                  <select
-                    value={quote.isPaid}
-                    onChange={(e) =>
-                      setQuotes(
-                        quotes.map((q) =>
-                          q.id === quote.id ? { ...q, isPaid: e.target.value === "true" } : q
+                <td style={{ textAlign: "center" }}>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      checked={quote.isPaid === true || quote.isPaid === "true"}
+                      onChange={(e) =>
+                        setQuotes(
+                          quotes.map((q) =>
+                            q.id === quote.id ? { ...q, isPaid: e.target.checked } : q
+                          )
                         )
-                      )
-                    }
-                    disabled={loading}
-                  >
-                    <option value="false">Unpaid</option>
-                    <option value="true">Paid</option>
-                  </select>
+                      }
+                      disabled={loading}
+                    />
+                    <span>{quote.isPaid === true || quote.isPaid === "true" ? "Paid" : "Unpaid"}</span>
+                  </label>
                 </td>
-                <td>
+                <td style={{ fontSize: "0.85rem" }}>
                   {quote.createdAt ? 
                     quote.createdAt.toDate().toLocaleString("en-US", {
                       timeZone: "Asia/Kolkata",
-                      weekday: "long",
                       year: "numeric",
-                      month: "long",
+                      month: "short",
                       day: "numeric",
                       hour: "numeric",
                       minute: "numeric",
-                      second: "numeric",
                     }) : "N/A"
                   }
                 </td>
                 <td>
-                  <div style={{ display: "flex", gap: "5px", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: "5px", justifyContent: "center" }}>
                     <button 
                       onClick={() => handleSaveQuote(quote.id, {
                         title: quote.title,
@@ -373,14 +555,14 @@ const ManageTrending = () => {
                         isPaid: quote.isPaid === "true" || quote.isPaid === true
                       })}
                       disabled={loading}
-                      style={{ backgroundColor: "#4CAF50", color: "white" }}
+                      style={{ backgroundColor: "#4CAF50", color: "white", padding: "5px 10px" }}
                     >
                       Save
                     </button>
                     <button 
                       onClick={() => handleDeleteQuote(quote.id, quote.imageUrl)}
                       disabled={loading}
-                      style={{ backgroundColor: "#ff6666", color: "white" }}
+                      style={{ backgroundColor: "#ff6666", color: "white", padding: "5px 10px" }}
                     >
                       Delete
                     </button>
@@ -395,6 +577,20 @@ const ManageTrending = () => {
       {quotes.length === 0 && !loading && (
         <p>No quotes found. Upload some quotes to get started.</p>
       )}
+
+      {/* Add some basic CSS for the toggle switch */}
+      <style jsx>{`
+        .toggle-switch {
+          position: relative;
+          display: inline-block;
+          cursor: pointer;
+          user-select: none;
+        }
+
+        .toggle-switch input {
+          margin-right: 5px;
+        }
+      `}</style>
     </div>
   );
 };
